@@ -13,7 +13,6 @@ import com.aliucord.patcher.after
 import com.aliucord.patcher.before
 import com.aliucord.views.TextInput
 import com.aliucord.widgets.BottomSheet
-import com.discord.api.message.attachment.MessageAttachment
 import com.discord.utilities.view.text.SimpleDraweeSpanTextView
 import com.discord.utilities.view.text.TextWatcher
 import com.discord.widgets.chat.MessageContent
@@ -22,7 +21,6 @@ import com.discord.widgets.chat.input.ChatInputViewModel
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
 import com.discord.widgets.chat.list.entries.MessageEntry
 import net.navibot.aliucord.plugins.error.ParseException
-
 
 @AliucordPlugin(requiresRestart = true)
 class LetThereBeColors : Plugin() {
@@ -34,53 +32,63 @@ class LetThereBeColors : Plugin() {
     }
 
     override fun start(context: Context) {
-
         try {
-            patcher.before<WidgetChatListAdapterItemMessage>("processMessageText", SimpleDraweeSpanTextView::class.java, MessageEntry::class.java) {
-                val textView = (it.args[0] as SimpleDraweeSpanTextView).apply {
-                    setTextColor(-2302498)
-                }
-
+            // Patch message display to show custom colors
+            patcher.before<WidgetChatListAdapterItemMessage>(
+                "processMessageText", 
+                SimpleDraweeSpanTextView::class.java, 
+                MessageEntry::class.java
+            ) {
+                val textView = it.args[0] as SimpleDraweeSpanTextView
                 val entry = it.args[1] as MessageEntry
+                
+                // Skip if message is loading or is just emotes
                 if (entry.message.isLoading || ColorUtils.isDiscordEmote(entry.message.content)) {
                     return@before
                 }
 
                 try {
-                    val decode = ColorUtils.decode(entry.message.content)
-                    textView.setTextColor(Color.parseColor("#$decode"))
-                } catch (num: ParseException) {
-                    // ignored, most likely just doesn't have a color set
+                    val decodedColor = ColorUtils.decode(entry.message.content)
+                    val color = Color.parseColor("#$decodedColor")
+                    textView.setTextColor(color)
+                } catch (e: ParseException) {
+                    // No color encoded, use default
+                    textView.setTextColor(Color.parseColor("#DCDDDE")) // Discord's default text color
+                } catch (e: Exception) {
+                    logger.error("Error parsing color", e)
                 }
             }
 
-            patcher.before<ChatInputViewModel>( "sendMessage",
+            // Patch message sending to add color encoding
+            patcher.before<ChatInputViewModel>(
+                "sendMessage",
                 Context::class.java,
                 MessageManager::class.java,
                 MessageContent::class.java,
                 List::class.java,
                 Boolean::class.javaPrimitiveType!!,
-                Function1::class.java) {
+                Function1::class.java
+            ) {
                 try {
                     val color = settings.getString("globalTextColor", null)
-
-                    if (!color.isNullOrEmpty()) {
+                    
+                    if (!color.isNullOrEmpty() && ColorUtils.isValidHex(color)) {
                         val content = it.args[2] as MessageContent
                         val text = content.textContent
-
-                        // ignore big emojis
-                        if (!ColorUtils.isDiscordEmote(text) && !ColorUtils.isCommand(text)) {
-                            content.set(ColorUtils.strip(content.textContent) + " " + ColorUtils.encode(color.replace("#", "")))
-
-                            it.args[2]
+                        
+                        // Don't modify emotes, commands, or empty messages
+                        if (text.isNotBlank() && !ColorUtils.isDiscordEmote(text) && !ColorUtils.isCommand(text)) {
+                            val strippedText = ColorUtils.strip(text)
+                            val encodedColor = ColorUtils.encode(color)
+                            content.set("$strippedText $encodedColor")
                         }
                     }
                 } catch (e: Exception) {
-                    logger.error(e)
+                    logger.error("Error encoding color in message", e)
                 }
             }
         } catch (e: Exception) {
-            logger.error(e)
+            logger.error("Error starting LetThereBeColors plugin", e)
         }
     }
 
@@ -93,25 +101,32 @@ class LetThereBeColors : Plugin() {
             super.onViewCreated(view, bundle)
             val ctx = view.context
 
-            TextInput(ctx, "Global text color for LetThereBeColors plugin users!").run {
+            TextInput(ctx, "Global text color (HEX format, e.g., #FF0000 or #F00)").run {
                 editText.run {
                     maxLines = 1
-                    setText(settings.getString("globalTextColor", null))
+                    hint = "#FF0000"
+                    setText(settings.getString("globalTextColor", ""))
 
                     addTextChangedListener(object : TextWatcher() {
                         override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {}
                         override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {}
                         override fun afterTextChanged(s: Editable) {
-                            if (s.toString().length <= 9) {
-                                settings.setString("globalTextColor", s.toString())
-                                Utils.promptRestart()
+                            val input = s.toString().trim()
+                            
+                            if (input.isEmpty()) {
+                                settings.setString("globalTextColor", "")
+                                return
+                            }
+                            
+                            if (ColorUtils.isValidHex(input)) {
+                                settings.setString("globalTextColor", input)
+                                Utils.showToast("Color saved! Restart required.")
                             } else {
-                                Utils.showToast("Invalid HEX provided!")
+                                Utils.showToast("Invalid HEX format! Use #FF0000 or #F00")
                             }
                         }
                     })
                 }
-
                 linearLayout.addView(this)
             }
         }
